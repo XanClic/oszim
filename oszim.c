@@ -40,6 +40,24 @@ typedef struct Frame {
     float l, r;
 } Frame;
 
+typedef struct SoundSource {
+    Frame *buffer;
+    int position;
+    int frames;
+} SoundSource;
+
+void audio_callback(void *opaque, uint8_t *stream, int len)
+{
+    SoundSource *ss = opaque;
+
+    if (ss->position + len > ss->frames) {
+        return;
+    }
+
+    memcpy(stream, ss->buffer + ss->position, len);
+    ss->position += len / sizeof(Frame);
+}
+
 int main(int argc, char **argv)
 {
     static const struct option options[] = {
@@ -112,16 +130,26 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    fseek(fp, 0, SEEK_END);
+    size_t lof = ftell(fp);
+    rewind(fp);
 
-    pid_t child = fork();
-    if (!child) {
-        close(0);
-        open("/dev/null", O_RDONLY);
-        execlp("mpv", "--vo=null", "--demuxer=rawaudio", "--demuxer-rawaudio-format=float", "--demuxer-rawaudio-channels=2", "--demuxer-rawaudio-rate=" STRINGIFY(SAMPLE_RATE), raw_name, NULL);
-        kill(getppid(), SIGTERM);
-    }
+    SoundSource *ss = malloc(sizeof(*ss));
+    ss->position = 0;
+    ss->frames = lof / sizeof(Frame);
+    ss->buffer = malloc(lof);
+    fread(ss->buffer, 1, lof, fp);
+    rewind(fp);
 
-    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER);
+    SDL_AudioSpec sdl_as = {0};
+    sdl_as.callback = audio_callback;
+    sdl_as.channels = 2;
+    sdl_as.format = AUDIO_F32LSB;
+    sdl_as.freq = SAMPLE_RATE;
+    sdl_as.samples = SAMPLE_RATE / 10; // 0.1 s delay
+    sdl_as.userdata = ss;
+
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER | SDL_INIT_AUDIO);
     atexit(SDL_Quit);
 
     int wsx = WINDOW_SIZE, wsy = WINDOW_SIZE;
@@ -137,6 +165,12 @@ int main(int argc, char **argv)
         SDL_SetWindowFullscreen(wnd, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
     SDL_GL_CreateContext(wnd);
+
+    if (SDL_OpenAudio(&sdl_as, NULL) < 0) {
+        fprintf(stderr, "Failed to open audio: %s\n", SDL_GetError());
+        unlink(raw_name);
+        return 1;
+    }
 
     Frame *samples, last_sample, *input_data;
     input_data = calloc(BATCH_SIZE * 2, sizeof(Frame));
@@ -159,7 +193,10 @@ int main(int argc, char **argv)
 
     glEnable(GL_BLEND);
 
-    uint32_t expected = 0;
+    SDL_PauseAudio(0);
+    SDL_Delay(100);
+
+    int32_t expected = 0, start_ticks = SDL_GetTicks();
     bool quit = false;
 
     int start_channel = visualize ? 0 : 1;
@@ -224,7 +261,7 @@ int main(int argc, char **argv)
         }
 
         expected += 1000 * BATCH_SIZE / SAMPLE_RATE;
-        uint32_t now_ticks = SDL_GetTicks();
+        int32_t now_ticks = SDL_GetTicks() - start_ticks;
         if (now_ticks < expected) {
             SDL_Delay(expected - now_ticks);
         }
@@ -242,7 +279,6 @@ int main(int argc, char **argv)
         }
     }
 
-    kill(child, SIGKILL);
     unlink(raw_name);
 
     return 0;
