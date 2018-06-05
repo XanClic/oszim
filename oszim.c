@@ -66,16 +66,19 @@ int main(int argc, char **argv)
         {"delay", required_argument, NULL, 'd'},
         {"visualize", no_argument, NULL, 'v'},
         {"fullscreen", no_argument, NULL, 'f'},
+        {"raw", no_argument, NULL, 'w'},
+        {"switch-channels", no_argument, NULL, 'x'},
 
         {NULL, 0, NULL, 0}
     };
 
 
     bool help = false, rotate = false, visualize = false, fullscreen = false;
+    bool raw = false, switch_channels = false;
     unsigned long delay = 0;
 
     for (;;) {
-        int option = getopt_long(argc, argv, "hrd:vf", options, NULL);
+        int option = getopt_long(argc, argv, "hrd:vfwx", options, NULL);
         if (option == -1) {
             break;
         }
@@ -108,21 +111,40 @@ int main(int argc, char **argv)
             case 'f':
                 fullscreen = true;
                 break;
+
+            case 'w':
+                raw = true;
+                break;
+
+            case 'x':
+                switch_channels = true;
+                break;
         }
     }
 
     if (help || (optind != argc - 1) || (visualize && delay)) {
-        fprintf(stderr, "Usage: oszim [-r] [-d <delay> | -v] <sound input>\n");
+        fprintf(stderr,
+                "Usage: oszim [-r] [-d <delay> | -v] [-w] [-x] "
+                "<sound input>\n");
         return 1;
     }
 
-    char *raw_name = tmpnam(NULL), *system_buf;
-    asprintf(&system_buf, "ffmpeg -loglevel error -i \"%s\" -f f32le -ac 2 \"%s\"", argv[optind], raw_name);
-    if (system(system_buf)) {
-        return 1;
-    }
+    char *raw_name;
+    if (raw) {
+        raw_name = argv[optind];
+    } else {
+        raw_name = tmpnam(NULL);
 
-    free(system_buf);
+        char *system_buf;
+        asprintf(&system_buf,
+                 "ffmpeg -loglevel error -i \"%s\" -f f32le -ac 2 \"%s\"",
+                 argv[optind], raw_name);
+        if (system(system_buf)) {
+            return 1;
+        }
+
+        free(system_buf);
+    }
 
     FILE *fp = fopen(raw_name, "rb");
     if (!fp) {
@@ -220,6 +242,14 @@ int main(int argc, char **argv)
             break;
         }
 
+        if (switch_channels) {
+            for (int i = 0; i < BATCH_SIZE; i++) {
+                float tmp = input_data[i + BATCH_SIZE].l;
+                input_data[i + BATCH_SIZE].l = input_data[i + BATCH_SIZE].r;
+                input_data[i + BATCH_SIZE].r = tmp;
+            }
+        }
+
 
         for (int channel = start_channel; channel <= end_channel; channel++) {
             delay = channel_delay[channel];
@@ -279,7 +309,9 @@ int main(int argc, char **argv)
         }
     }
 
-    unlink(raw_name);
+    if (!raw) {
+        unlink(raw_name);
+    }
 
     return 0;
 }
